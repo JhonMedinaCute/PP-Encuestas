@@ -1,0 +1,406 @@
+***********************************************
+* Proyect: 
+* Do file used to run RD regressions
+* Author: Juan Sebastián Lemos
+* Author: Jhon Medina
+***********************************************
+
+
+clear all
+set more off
+cap log clase
+set varabbrev off
+
+
+global path "/Users/`c(username)'/Library/CloudStorage/OneDrive-Universidaddelosandes/PP Math/4. Datos"
+global BasesR "${path}/1. Bases_raw"
+global BasesS "${path}/2. Bases_stata"
+global Resultados "${path}/4. Resultados/2. Regresiones/1. Raw"
+global ResultadosRD "${path}/4. Resultados/2. Regresiones/1. Raw/4.RD"
+qui do "${path}/3. Códigos/TexEdits.do"
+
+
+*------------------------------------------------------------------------------*
+**# 1) Import data
+*------------------------------------------------------------------------------*
+
+use "${BasesS}/base_regresiones", clear
+
+*br if PERIODO==202120
+
+tab PERIODO
+
+*------------------------------------------------------------------------------*
+**# 2) Clean data
+*------------------------------------------------------------------------------*
+
+	drop if PERIODO < 201510 
+	
+	* Drop semesters with no data 
+	
+	gen ultimos=substr(periodo_s,5,.)
+	drop if ultimos=="19"
+	destring ESTRATO, replace
+	
+	sort CODIGO_ESTUDIANTE PERIODO 
+	* Left the first time someone took CD
+	duplicates tag CODIGO_ESTUDIANTE, gen(tag)
+	tab tag
+	drop tag
+	gen muestra = (PERIODO==CD_primeravez)
+
+	* Keep people the first time they took CD
+	keep if muestra==1
+	*duplicates report CODIGO_ESTUDIANTE
+	
+*------------------------------------------------------------------------------*
+**# 3) Gráfico para ver la probabilidad de tratamiento
+*------------------------------------------------------------------------------*
+
+	replace PMA=. if PMA==0 //corregir el cambio que hago para ordenar en el dofile de descriptivas
+
+	tw (scatter Precalculo PMA) (lfit Precalculo PMA if PMA<=79) (lfit Precalculo PMA if PMA>79), ///
+	xline(79) ytitle("Probabilidad de tomar precálculo") xtitle("Puntaje en matemáticas") ///
+	legend(order(1 "(1) tomó precálculo (0) no" 2 "Discontinuidad en" 3 "probabilidad de ser tratado")) ///
+	title("Cambio en la probabilidad de ser tratado (ver precálculo)") ///
+	note("Se grafican la linea de tendencia antes y después de 79 puntos.")
+	*graph export "${ResultadosRD}/probabilidad_ser_tratado.png", as(png) replace
+	
+	
+*------------------------------------------------------------------------------*
+**# 4) Generar variable de elegibilidad
+*------------------------------------------------------------------------------*
+	
+	gen mandatoryPC = (PMA<79)
+	tab mandatoryPC Precalculo
+	
+*------------------------------------------------------------------------------*
+**# 5) Grafico para ver la probabilidad de tratamiento
+*------------------------------------------------------------------------------*
+
+* 5.1 Discontinuidad en la probabilidad de tratamiento	
+	reghdfe Precalculo mandatoryPC##c.PMA, a(PERIODO)			///
+		vce(robust)
+	
+	di "El salto en la probabilidad de tratamiento es de " 						///
+		string(_b[1.mandatoryPC]*100,"%6.3f") " puntos porcentuales "		///
+		"y el p-valor de la prueba de significancia individual es de " 			///
+		string(ttail(e(df_r),abs(_b[1.mandatoryPC]/_se[1.mandatoryPC]))*2, ///
+		"%6.3f")
+	
+	
+
+* 5.2 No manipulación de la variable de focalización
+	*ssc install rddensity	
+
+	rddensity PMA, c(79) plot graph_opt(title("Test manipulación en el umbral (79 puntos)") ///
+	legend(off) xtitle("Puntaje en matemáticas") ytitle("Densidad")) 
+	*graph export "${ResultadosRD}/manipulacion.png", as(png) replace
+	
+	sum PMA, d
+	hist PMA, xline(79) xtitle("Puntaje en matemáticas") ytitle("Densidad") ///
+	title("Histograma puntaje en matemáticas") xlabel(10(5)100) ///
+	note("Media: 77.71. Desv. est: 12.38") color(blue%50)
+	*graph export "${ResultadosRD}/histogram_PMA.png", as(png) replace
+	
+* Check manipulation by years
+
+	global semestre 201510 201520 201610 ///
+	201620 201710 201720 201810 201820 201910 ///
+	201920 202020 202110 202120 202210 202220 202310 202320 202410
+	
+	foreach x of global semestre {
+	preserve
+	keep if PERIODO == `x'	
+	rddensity PMA, c(79) plot graph_opt(title("Test manipulación en el umbral. Semestre `x'") ///
+	legend(off) xtitle("Puntaje en matemáticas") ytitle("Densidad")) 
+	*graph export "${ResultadosRD}/histogram_PMA_`x'.png", as(png) replace
+	restore
+	}
+	
+	
+*------------------------------------------------------------------------------*
+**# 6) Graficos a través del puntaje
+*------------------------------------------------------------------------------*
+
+*6.1 Gráfico de nota
+	preserve
+	drop if PMA<20
+	tw (scatter CALIFICACION_FINAL_VALOR PMA) (lfit CALIFICACION_FINAL_VALOR PMA if PMA<=79) ///
+	(lfit CALIFICACION_FINAL_VALOR PMA if PMA>79), ///
+	xline(79) ytitle("Nota en CD") xtitle("Puntaje en matemáticas") ///
+	legend(off) ///
+	title("Nota vs puntaje en matemáticas") ///
+	note("Se grafican la linea de tendencia antes y después de 79 puntos.")
+	*graph export "${ResultadosRD}/nota-puntaje-agregada.png", as(png) replace
+	restore
+	
+	preserve
+	egen d = cut(PMA), group(50)
+	tab d
+	drop if PMA<20
+	collapse (mean) PMA CALIFICACION_FINAL_VALOR, by(d)
+	tw (scatter CALIFICACION_FINAL_VALOR PMA) (lfit CALIFICACION_FINAL_VALOR PMA if PMA<=79) ///
+	(lfit CALIFICACION_FINAL_VALOR PMA if PMA>79), ///
+	xline(79) ytitle("Nota en CD") xtitle("Puntaje en matemáticas") ///
+	legend(off) ///
+	title("Nota vs puntaje en matemáticas") ///
+	note("Se grafican la linea de tendencia antes y después de 79 puntos. Se hacen 50 grupos.")
+	*graph export "${ResultadosRD}/nota-puntaje.png", as(png) replace
+	restore
+	
+	preserve
+	keep if calendario=="A"
+	egen d = cut(PMA), group(50)
+	tab d
+	drop if PMA<20
+	collapse (mean) PMA CALIFICACION_FINAL_VALOR, by(d)
+	tw (scatter CALIFICACION_FINAL_VALOR PMA) (lfit CALIFICACION_FINAL_VALOR PMA if PMA<=79) ///
+	(lfit CALIFICACION_FINAL_VALOR PMA if PMA>79), ///
+	xline(79) ytitle("Nota en CD") xtitle("Puntaje en matemáticas") ///
+	legend(off) ///
+	title("Calendario A") ///
+	name(go,replace) ///
+	saving("nota-calendar-A", replace)
+	restore
+	
+	preserve
+	keep if calendario=="B"
+	egen d = cut(PMA), group(50)
+	tab d
+	drop if PMA<20
+	collapse (mean) PMA CALIFICACION_FINAL_VALOR, by(d)
+	tw (scatter CALIFICACION_FINAL_VALOR PMA) (lfit CALIFICACION_FINAL_VALOR PMA if PMA<=79) ///
+	(lfit CALIFICACION_FINAL_VALOR PMA if PMA>79), ///
+	xline(79) ytitle("Nota en CD") xtitle("Puntaje en matemáticas") ///
+	legend(off) ///
+	title("Calendario B") ///
+	name(g1,replace) ///
+	saving("nota-calendar-B", replace)
+	restore
+	
+	graph combine "nota-calendar-A" "nota-calendar-B", ycommon title("Nota en CD por calendarios") ///
+	note("Se grafican la linea de tendencia antes y después de 79 puntos. Se hacen 50 grupos.")
+	*graph export "${ResultadosRD}/nota-calendarios.png", as(png) replace
+
+	
+*6.2 Probabilidad de reprobar
+	gen reprobo=(aprovo==0)
+	tab PERIODO if DESCRIPCION_ESTADO_INSCRIPCION=="RETIRADO POR ESTUDIANTE"
+	
+	preserve
+	drop if PMA<20
+	tw (scatter reprobo PMA) (lfit reprobo PMA if PMA<=79) ///
+	(lfit reprobo PMA if PMA>79), ///
+	xline(79) ytitle("Probabilidad de reprobar CD") xtitle("Puntaje en matemáticas") ///
+	legend(off) ///
+	title("Probabilidad de reprobar CD vs puntaje en matemáticas") ///
+	note("Se grafican la linea de tendencia antes y después de 79 puntos.")
+	*graph export "${ResultadosRD}/reprobar-puntaje-agregada.png", as(png) replace
+	restore
+	
+	preserve
+	keep if calendario=="A"
+	drop if PMA<20
+	tw (scatter reprobo PMA) (lfit reprobo PMA if PMA<=79) ///
+	(lfit reprobo PMA if PMA>79), ///
+	xline(79) ytitle("Probabilidad de reprobar CD") xtitle("Puntaje en matemáticas") ///
+	legend(off) ///
+	title("Calendario A") ///
+	name(go,replace) ///
+	saving("nota-calendar-A", replace)
+	restore
+	
+	preserve
+	keep if calendario=="B"
+	drop if PMA<20
+	tw (scatter reprobo PMA) (lfit reprobo PMA if PMA<=79) ///
+	(lfit reprobo PMA if PMA>79), ///
+	xline(79) ytitle("Probabilidad de reprobar CD") xtitle("Puntaje en matemáticas") ///
+	legend(off) ///
+	title("Calendario B") ///
+	name(g1,replace) ///
+	saving("nota-calendar-B", replace)
+	restore
+	
+	graph combine "nota-calendar-A" "nota-calendar-B", ycommon title("Probabilidad de reprobar CD por calendarios") ///
+	note("Se grafican la linea de tendencia antes y después de 79 puntos.")
+	*graph export "${ResultadosRD}/reprobar-calendarios.png", as(png) replace
+
+*6.3 Probabilidad de sacar más de 4
+	gen great_grade = (CALIFICACION_FINAL_VALOR>=4 & CALIFICACION_FINAL_VALOR!=.)
+	gen best_grade = (CALIFICACION_FINAL_VALOR>=4.5 & CALIFICACION_FINAL_VALOR!=.)
+	
+	preserve
+	drop if PMA<20
+	tw (scatter great_grade PMA) (lfit great_grade PMA if PMA<=79) ///
+	(lfit great_grade PMA if PMA>79), ///
+	xline(79) ytitle("Probabilidad de sacar más de 4") xtitle("Puntaje en matemáticas") ///
+	legend(off) ///
+	title("Probabilidad de sacar más de 4 vs puntaje en matemáticas") ///
+	note("Se grafican la linea de tendencia antes y después de 79 puntos.")
+	*graph export "${ResultadosRD}/nota-mayor4-puntaje-agregada.png", as(png) replace
+	restore
+	
+	preserve
+	keep if calendario=="A"
+	drop if PMA<20
+	tw (scatter great_grade PMA) (lfit great_grade PMA if PMA<=79) ///
+	(lfit great_grade PMA if PMA>79), ///
+	xline(79) ytitle("Probabilidad de sacar más de 4") xtitle("Puntaje en matemáticas") ///
+	legend(off) ///
+	title("Calendario A") ///
+	name(go,replace) ///
+	saving("nota-calendar-A", replace)
+	restore
+	
+	preserve
+	keep if calendario=="B"
+	drop if PMA<20
+	tw (scatter great_grade PMA) (lfit great_grade PMA if PMA<=79) ///
+	(lfit great_grade PMA if PMA>79), ///
+	xline(79) ytitle("Probabilidad de sacar más de 4") xtitle("Puntaje en matemáticas") ///
+	legend(off) ///
+	title("Calendario B") ///
+	name(g1,replace) ///
+	saving("nota-calendar-B", replace)
+	restore
+	
+	graph combine "nota-calendar-A" "nota-calendar-B", ycommon title("Probabilidad de sacar más de 4 por calendarios") ///
+	note("Se grafican la linea de tendencia antes y después de 79 puntos.")
+	*graph export "${ResultadosRD}/nota-mayor4-calendarios.png", as(png) replace
+	
+
+	*6.4 Probabilidad de sacar más de 4.5
+
+	preserve
+	drop if PMA<20
+	tw (scatter best_grade PMA) (lfit best_grade PMA if PMA<=79) ///
+	(lfit best_grade PMA if PMA>79), ///
+	xline(79) ytitle("Probabilidad de sacar más de 4.5") xtitle("Puntaje en matemáticas") ///
+	legend(off) ///
+	title("Probabilidad de sacar más de 4.5 vs puntaje en matemáticas") ///
+	note("Se grafican la linea de tendencia antes y después de 79 puntos.")
+	*graph export "${ResultadosRD}/nota-mayor45-puntaje-agregada.png", as(png) replace
+	restore
+	
+	preserve
+	keep if calendario=="A"
+	drop if PMA<20
+	tw (scatter best_grade PMA) (lfit best_grade PMA if PMA<=79) ///
+	(lfit best_grade PMA if PMA>79), ///
+	xline(79) ytitle("Probabilidad de sacar más de 4.5") xtitle("Puntaje en matemáticas") ///
+	legend(off) ///
+	title("Calendario A") ///
+	name(go,replace) ///
+	saving("nota-calendar-A", replace)
+	restore
+	
+	preserve
+	keep if calendario=="B"
+	drop if PMA<20
+	tw (scatter best_grade PMA) (lfit best_grade PMA if PMA<=79) ///
+	(lfit best_grade PMA if PMA>79), ///
+	xline(79) ytitle("Probabilidad de sacar más de 4.5") xtitle("Puntaje en matemáticas") ///
+	legend(off) ///
+	title("Calendario B") ///
+	name(g1,replace) ///
+	saving("nota-calendar-B", replace)
+	restore
+	
+	graph combine "nota-calendar-A" "nota-calendar-B", ycommon title("Probabilidad de sacar más de 4.5 por calendarios") ///
+	note("Se grafican la linea de tendencia antes y después de 79 puntos.")
+	*graph export "${ResultadosRD}/nota-mayor45-calendarios.png", as(png) replace
+	
+	
+	* 6.5 Compliers information
+	gen tomar_PC = (PMA>=79 & Precalculo==1 & PMA!=.)
+	gen omite_PC = (PMA<79 & Precalculo==0)
+	gen nocomplier= tomar_PC+omite_PC
+	count if nocomplier==1
+	scalar total_nocomplier = `r(N)'
+	
+	* Obtener el número de incumplidores como proporción de la muestra total
+	count if tomar_PC==1
+	dis (`r(N)'/_N)*100
+	dis (`r(N)'/(total_nocomplier))*100
+	count if omite_PC==1
+	dis (`r(N)'/_N)*100
+	dis (`r(N)'/total_nocomplier)*100
+	
+	
+	graph bar (sum) tomar_PC omite_PC, legend(order(1 "Tomar Preca" 2 "Omite Preca") ///
+	position(6) col(2) size(small)) ///
+	ytitle("Número de estudiantes")  ///
+	title("Número de non-compliers por tipo de incumplimiento") ///
+	note("Tomar Preca cuando no debe: 4.77% (muestra) 39.2% (non-compliance).", size(small)) caption("Omitir Preca cuando debe: 7.4% (muestra) 60.8% (non-compliance).", size(small)) blabel(bar)
+	*graph export "${ResultadosRD}/incumplimiento/incumplimiento-tipo-allsample.png", as(png) replace
+	
+	* Incumplimiento por tipo de calendario sobre muestra completa
+	count if nocomplier ==1 & calendario!=""
+	scalar total_nocomplier_calendario = `r(N)'
+	
+	count if calendario=="A" &  tomar_PC==1
+	dis (`r(N)'/total_nocomplier_calendario)*100
+	count if calendario=="A" &  omite_PC==1
+	dis (`r(N)'/total_nocomplier_calendario)*100
+	count if calendario=="B" &  tomar_PC==1
+	dis (`r(N)'/total_nocomplier_calendario)*100
+	count if calendario=="B" &  omite_PC==1
+	dis (`r(N)'/total_nocomplier_calendario)*100
+	
+	graph bar (sum) tomar_PC omite_PC, over(calendario) legend(order(1 "Tomar Preca" 2 "Omite Preca") position(6) col(2)) ///
+	ytitle("Número de estudiantes") blabel(bar)  ///
+	title("Número de non-compliers por tipo de incumplimiento y calendario") ///
+	note("Tomar Preca cuando no debe: 25.29% (Calendario A) 12.77% (Calendario B).", size(small)) ///
+	caption("Omitir Preca: 32.62% (Calendario A) 29.29% (Calendario B).", size(small))
+	*graph export "${ResultadosRD}/incumplimiento/incumplimiento-calendario-allsample.png", as(png) replace
+	
+	*** Incumplimiento sobre total de personas a un lado del umbral
+	
+	* Izquierda del umbral (completo)
+	count if PMA<79
+	scalar no_toma=`r(N)'
+	count if PMA<79 & Precalculo==0
+	scalar incumplimiento_left = (`r(N)'/no_toma)*100
+
+	* Izquierda del umbral (10 puntos abajo)
+	count if PMA<79 & PMA>=69
+	scalar no_toma_u=`r(N)'
+	count if PMA<79 & PMA>=69 & Precalculo==0
+	scalar incumplimiento_left_umbral = (`r(N)'/no_toma_u)*100
+	
+	* Derecha del umbral (completo)
+	count if PMA>=79 & PMA!=.
+	scalar toma=`r(N)'
+	count if PMA>=79 & PMA!=. & Precalculo==1
+	scalar incumplimiento_right = (`r(N)'/toma)*100
+	
+	* Derecha del umbral (10 puntos arriba)
+	count if PMA>=79 & PMA<=89 & PMA!=.
+	scalar toma_u=`r(N)'
+	count if PMA>=79 & PMA<=89 & PMA!=. & Precalculo==1
+	scalar incumplimiento_right_umbral = (`r(N)'/toma_u)*100
+	
+	preserve
+	clear
+	set obs 2
+	gen id = _n
+	gen codigo = "" 
+	replace codigo="Omitir Precálculo" if id ==1
+	replace codigo="Tomar Precálculo" if id ==2
+	gen value1 =.
+	replace value1 = incumplimiento_left if codigo=="Omitir Precálculo"
+	replace value1 = incumplimiento_right if codigo=="Tomar Precálculo"
+	gen value2 =.
+	replace value2 = incumplimiento_left_umbral if codigo=="Omitir Precálculo"
+	replace value2 = incumplimiento_right_umbral if codigo=="Tomar Precálculo"
+	graph bar value1 value2, over(codigo)  ytitle("Porcentaje (%)") ///
+	title("Porcentaje de 'Non compliers'") bar(1, fcolor(navy%50)) ///
+	bar(2, fcolor(red%50)) legend(position(6) c(2) ///
+	order(1 "Incumplimiento - total" 2 "Incumplimiento - umbral")) ylabel(0(5)20) blabel(bar) ///
+	note ("Para el umbral se toma un ancho de banda de 10 puntos.")
+	*graph export "${ResultadosRD}/incumplimiento/total-no-compliers.png", as(png) replace
+	restore
+	
+	
