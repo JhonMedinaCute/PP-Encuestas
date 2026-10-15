@@ -5,6 +5,7 @@ Proyecto de investigación en elq ue trabaje desarrollado en R para la descarga,
 ## Habilidades utilizadas
 
 - R
+- Stata
 - Manipulación de datos
 - Automatización de procesos
 - Limpieza y transformación de datos
